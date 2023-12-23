@@ -1,0 +1,85 @@
+name: Android Telegram Upload
+
+on:
+  push:
+    branches:    
+      - 'prod'
+    paths:
+      - "version"
+      - ".github/workflows/upload-android.yml"
+      - "game/export_presets.android.example"
+
+
+env:
+  WORKING_DIRECTORY: game
+  ANDROID_SERVICE_ACCOUNT_JSON: ${{ secrets.ANDROID_SERVICE_ACCOUNT_JSON }}
+  ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+  ANDROID_KEYSTORE_ALIAS: ${{ secrets.ANDROID_KEYSTORE_ALIAS }}
+  ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+  ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+  ANDROID_KEYSTORE_DEBUG_BASE64: ${{ secrets.ANDROID_KEYSTORE_DEBUG_BASE64 }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v3
+
+      - name: Read version number and version code
+        run: |
+          echo "VERSION_NAME=$(cat version | cut -f1 -d-)" >> $GITHUB_ENV
+          echo "VERSION_CODE=$(cat version | cut -f2 -d-)" >> $GITHUB_ENV
+          echo "APP_NAME=$(cat version | grep APP_NAME | cut -d= -f2)" >> $GITHUB_ENV
+          echo "UNIQUE_NAME=$(cat version | grep UNIQUE_NAME | cut -d= -f2)" >> $GITHUB_ENV
+          echo "PACKAGE_NAME=$(cat version | grep PACKAGE_NAME | cut -d= -f2)" >> $GITHUB_ENV
+
+      - name: Checkout source code
+        uses: actions/checkout@v3
+
+      - name: Create keystores from repo secrets
+        run: |
+          echo $ANDROID_KEYSTORE_BASE64 | base64 --decode > keystore.keystore
+          echo $ANDROID_KEYSTORE_DEBUG_BASE64 | base64 --decode > debug.keystore
+
+      - name: Create export_presets.cfg and inject values
+        run: |
+          cp game/export_presets.android.example game/export_presets.cfg
+          sed -i "s|VERSION_CODE|$VERSION_CODE|g" $WORKING_DIRECTORY/export_presets.cfg
+          sed -i "s|APP_NAME|$APP_NAME|g" $WORKING_DIRECTORY/export_presets.cfg
+          sed -i "s|UNIQUE_NAME|$UNIQUE_NAME|g" $WORKING_DIRECTORY/export_presets.cfg
+          sed -i "s|PACKAGE_NAME|$PACKAGE_NAME|g" $WORKING_DIRECTORY/export_presets.cfg
+          sed -i "s|VERSION_NAME|$VERSION_NAME|g" $WORKING_DIRECTORY/export_presets.cfg
+          sed -i "s|KEYSTORE_RELEASE_PATH|$GITHUB_WORKSPACE/keystore.keystore|g" $WORKING_DIRECTORY/export_presets.cfg
+          sed -i "s|KEYSTORE_DEBUG_PATH|$GITHUB_WORKSPACE/debug.keystore|g" $WORKING_DIRECTORY/export_presets.cfg
+          sed -i "s|ANDROID_KEYSTORE_ALIAS|$ANDROID_KEYSTORE_ALIAS|g" $WORKING_DIRECTORY/export_presets.cfg
+          sed -i "s|ANDROID_KEYSTORE_PASSWORD|$ANDROID_KEYSTORE_PASSWORD|g" $WORKING_DIRECTORY/export_presets.cfg
+
+      # GODOT EXPORT Using export_presets.cfg
+      - name: Godot Android export
+        uses: dulvui/godot-android-export@v2.0.2
+        with:
+          working-directory: $WORKING_DIRECTORY
+
+      - name: Bundle exported aab to apk
+        run: |
+          wget -q https://github.com/google/bundletool/releases/download/1.14.0/bundletool-all-1.14.0.jar
+          java -jar bundletool-all-1.14.0.jar build-apks --bundle=${{ env.APP_NAME }}.aab --output=${{ env.APP_NAME }}.apks \
+          --ks=keystore.keystore --ks-pass=pass:"$ANDROID_STORE_PASSWORD" --ks-key-alias="$ANDROID_KEYSTORE_ALIAS" \
+          --key-pass=pass:"$ANDROID_KEYSTORE_PASSWORD" --mode=universal
+          unzip -p ${{ env.APP_NAME }}.apks universal.apk > ${{ env.APP_NAME }}_${{ env.VERSION_CODE }}.apk
+      
+      # Upload APK to Telegram
+      - name: Upload APK file to telegram
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.GROUP_ID }}
+          token: ${{ secrets.TELEGRAM_TOKEN }}
+          message: |
+            Event: ${{ github.event_name }}
+            Job ID: ${{ github.job }}
+            Triggered by: ${{ github.actor }}
+            Branch or TAG: ${{ github.ref }}
+            Commit SHA: ${{ github.sha }}
+            App Version: ${{ env.VERSION_CODE }}
+          document: ./${{ env.APP_NAME }}_${{ env.VERSION_CODE }}.apk
